@@ -87,113 +87,76 @@ type Mod struct {
 	Version string `json:"version"`
 }
 
+// getStatus retrieves the status of a server, either using cache or fetching a fresh status.
+func getStatus(host string, port uint16, cacheKeyPrefix string, statusFetcher func(string, uint16) (interface{}, error), cacheDuration time.Duration) (interface{}, time.Duration, error) {
+	cacheKey := fmt.Sprintf("%s:%s-%d", cacheKeyPrefix, host, port)
+
+	cache, ttl, err := r.Get(cacheKey)
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if cache != nil {
+		var response interface{}
+		err = json.Unmarshal(cache, &response)
+		return response, ttl, err
+	}
+
+	response, err := statusFetcher(host, port)
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	data, err := json.Marshal(response)
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if err := r.Set(cacheKey, data, cacheDuration); err != nil {
+		return nil, 0, err
+	}
+
+	return response, 0, nil
+}
+
+// GetJavaStatus returns the status response of a Java Edition server.
 func GetJavaStatus(host string, port uint16) (*JavaStatusResponse, time.Duration, error) {
-	cacheKey := fmt.Sprintf("java:%s-%d", host, port)
-
-	cache, ttl, err := r.Get(cacheKey)
-
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if cache != nil {
-		var response JavaStatusResponse
-
-		err = json.Unmarshal(cache, &response)
-
-		return &response, ttl, err
-	}
-
-	response, err := FetchJavaStatus(host, port)
-
-	if err != nil {
-		return nil, 0, err
-	}
-
-	data, err := json.Marshal(response)
-
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if err := r.Set(cacheKey, data, config.Cache.JavaStatusDuration); err != nil {
-		return nil, 0, err
-	}
-
-	return response, 0, nil
+	return getStatus(host, port, "java", FetchJavaStatus, conf.Cache.JavaStatusDuration)
 }
 
+// GetBedrockStatus returns the status response of a Bedrock Edition server.
 func GetBedrockStatus(host string, port uint16) (*BedrockStatusResponse, time.Duration, error) {
-	cacheKey := fmt.Sprintf("bedrock:%s-%d", host, port)
-
-	cache, ttl, err := r.Get(cacheKey)
-
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if cache != nil {
-		var response BedrockStatusResponse
-
-		err = json.Unmarshal(cache, &response)
-
-		return &response, ttl, err
-	}
-
-	response, err := FetchBedrockStatus(host, port)
-
-	if err != nil {
-		return nil, 0, err
-	}
-
-	data, err := json.Marshal(response)
-
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if err := r.Set(cacheKey, data, config.Cache.BedrockStatusDuration); err != nil {
-		return nil, 0, err
-	}
-
-	return response, 0, nil
+	return getStatus(host, port, "bedrock", FetchBedrockStatus, conf.Cache.BedrockStatusDuration)
 }
 
+// GetServerIcon returns the icon image of a Java Edition server.
 func GetServerIcon(host string, port uint16) ([]byte, time.Duration, error) {
-	cacheKey := fmt.Sprintf("icon:%s-%d", host, port)
+	iconFetcher := func(host string, port uint16) (interface{}, error) {
+		icon := defaultIcon
 
-	cache, ttl, err := r.Get(cacheKey)
+		status, err := mcutil.Status(host, port)
 
-	if err != nil {
-		return nil, 0, err
-	}
+		if err == nil && status.Favicon != nil && strings.HasPrefix(*status.Favicon, "data:image/png;base64,") {
+			data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(*status.Favicon, "data:image/png;base64,"))
 
-	if cache != nil {
-		return cache, ttl, err
-	}
+			if err != nil {
+				return nil, err
+			}
 
-	icon := defaultIcon
-
-	status, err := mcutil.Status(host, port)
-
-	if err == nil && status.Favicon != nil && strings.HasPrefix(*status.Favicon, "data:image/png;base64,") {
-		data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(*status.Favicon, "data:image/png;base64,"))
-
-		if err != nil {
-			return nil, 0, err
+			icon = data
 		}
 
-		icon = data
+		return icon, nil
 	}
 
-	if err := r.Set(cacheKey, icon, config.Cache.IconDuration); err != nil {
-		return nil, 0, err
-	}
-
-	return icon, 0, nil
+	icon, ttl, err := getStatus(host, port, "icon", iconFetcher, conf.Cache.IconDuration)
+	return icon.([]byte), ttl, err
 }
 
-func FetchJavaStatus(host string, port uint16) (*JavaStatusResponse, error) {
+func FetchJavaStatus(host string, port uint16) (interface{}, error) {
 	status, err := mcutil.Status(host, port)
 
 	if err != nil {
@@ -306,7 +269,7 @@ func FetchJavaStatus(host string, port uint16) (*JavaStatusResponse, error) {
 	}, nil
 }
 
-func FetchBedrockStatus(host string, port uint16) (*BedrockStatusResponse, error) {
+func FetchBedrockStatus(host string, port uint16) (interface{}, error) {
 	status, err := mcutil.StatusBedrock(host, port)
 
 	if err != nil {
